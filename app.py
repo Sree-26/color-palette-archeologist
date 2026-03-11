@@ -1,365 +1,456 @@
-"""
-╔══════════════════════════════════════════════════════════════╗
-║         THE COLOR PALETTE ARCHEOLOGIST  v3                   ║
-║         Fix: hue-bucketing guarantees all hue families       ║
-║         appear — reds are never buried by green backgrounds  ║
-╚══════════════════════════════════════════════════════════════╝
-"""
-
-import numpy as np
+import streamlit as st
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.gridspec import GridSpec
-import gradio as gr
-import colorsys
-import warnings
-warnings.filterwarnings("ignore")
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import date
+import json
+import os
+import random
 
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="MoodBloom 🌸",
+    page_icon="🌸",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# ─────────────────────────────────────────────────────────────
-# SECTION 1 ▸ COLOR MATH UTILITIES
-# ─────────────────────────────────────────────────────────────
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,600;1,300&family=DM+Sans:wght@300;400;500&display=swap');
 
-def rgb_to_hex(r, g, b):
-    return "#{:02X}{:02X}{:02X}".format(int(r), int(g), int(b))
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
+.stApp {
+    background: linear-gradient(135deg, #fdf6f0 0%, #fef0f5 50%, #f0f4fe 100%);
+}
 
-def complementary_color(r, g, b):
-    r0, g0, b0 = r / 255.0, g / 255.0, b / 255.0
-    cmax, cmin = max(r0, g0, b0), min(r0, g0, b0)
-    return (
-        int(np.clip(((cmax + cmin) - r0) * 255, 0, 255)),
-        int(np.clip(((cmax + cmin) - g0) * 255, 0, 255)),
-        int(np.clip(((cmax + cmin) - b0) * 255, 0, 255)),
+#MainMenu, footer, header { visibility: hidden; }
+
+h1 {
+    font-family: 'Fraunces', serif !important;
+    font-weight: 600 !important;
+    color: #2d1b4e !important;
+    letter-spacing: -1px;
+}
+h2, h3 {
+    font-family: 'Fraunces', serif !important;
+    color: #2d1b4e !important;
+}
+
+.stButton > button {
+    background: linear-gradient(135deg, #b06ab3, #4568dc) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 50px !important;
+    padding: 10px 28px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 500 !important;
+    box-shadow: 0 4px 15px rgba(176,106,179,0.3) !important;
+    transition: all 0.3s ease !important;
+}
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 20px rgba(176,106,179,0.4) !important;
+}
+
+[data-testid="metric-container"] {
+    background: rgba(255,255,255,0.75) !important;
+    border-radius: 16px !important;
+    padding: 16px !important;
+    border: 1px solid rgba(255,255,255,0.9) !important;
+    box-shadow: 0 2px 12px rgba(180,140,200,0.08) !important;
+}
+
+[data-testid="stSidebar"] {
+    background: rgba(255,255,255,0.6) !important;
+    backdrop-filter: blur(20px);
+    border-right: 1px solid rgba(255,255,255,0.8);
+}
+
+.insight-box {
+    background: linear-gradient(135deg, rgba(176,106,179,0.1), rgba(69,104,220,0.1));
+    border-left: 3px solid #b06ab3;
+    border-radius: 0 12px 12px 0;
+    padding: 16px 20px;
+    margin: 12px 0;
+    font-style: italic;
+    color: #4a3060;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #9b8ab8;
+    font-family: 'Fraunces', serif;
+}
+.empty-state .icon { font-size: 64px; margin-bottom: 16px; }
+.empty-state h3 { color: #9b8ab8 !important; font-size: 1.4rem; }
+.empty-state p { font-family: 'DM Sans', sans-serif; font-size: 0.95rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+DATA_FILE = "mood_data.json"
+
+MOOD_EMOJIS = {
+    "😄 Joyful": 5,
+    "🙂 Good": 4,
+    "😐 Neutral": 3,
+    "😕 Low": 2,
+    "😞 Struggling": 1,
+}
+
+ENERGY_LABELS = {
+    1: "🪫 Drained",
+    2: "😴 Tired",
+    3: "⚡ Okay",
+    4: "🔥 Energized",
+    5: "🚀 Buzzing",
+}
+
+HABITS = [
+    "💧 Drank water",
+    "🏃 Exercised",
+    "🥗 Ate well",
+    "📵 Less screen time",
+    "🧘 Meditated",
+    "📚 Read",
+    "🌿 Spent time outside",
+    "🎵 Listened to music",
+]
+
+AFFIRMATIONS = [
+    "You showed up today — that's everything. 🌸",
+    "Small steps still move you forward. ✨",
+    "Your feelings are valid. Be gentle with yourself. 💜",
+    "Rest is productive too. 🌙",
+    "You are doing better than you think. 🌱",
+    "Every day is a new chapter. 📖",
+    "You deserve the kindness you give others. 🤍",
+]
+
+# ── Data helpers ──────────────────────────────────────────────────────────────
+def load_data():
+    """Load user entries from a local JSON file. Returns [] if none exist yet."""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_entry(entry):
+    """Append one entry dict and write to disk."""
+    data = load_data()
+    data.append(entry)
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def clear_all_data():
+    with open(DATA_FILE, "w") as f:
+        json.dump([], f)
+
+def entries_to_df(entries):
+    """Turn list-of-dicts into a sorted DataFrame."""
+    df = pd.DataFrame(entries)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date").reset_index(drop=True)
+
+def calc_streak(entries):
+    """Count consecutive days up to today that have an entry."""
+    logged = {e["date"] for e in entries}
+    streak = 0
+    for i in range(len(entries) + 30):
+        check = (date.today() - pd.Timedelta(days=i)).isoformat()
+        if check in logged:
+            streak += 1
+        else:
+            break
+    return streak
+
+def already_logged_today(entries):
+    return date.today().isoformat() in {e["date"] for e in entries}
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+entries = load_data()
+
+with st.sidebar:
+    st.markdown("## 🌸 MoodBloom")
+    st.markdown("*Your personal wellness journal*")
+    st.divider()
+
+    page = st.radio(
+        "Navigate",
+        ["📝 Log Today", "📊 My Trends", "🔍 Insights", "📅 History"],
+        label_visibility="collapsed",
     )
 
+    st.divider()
+    st.markdown(
+        f"<div class='insight-box'>{random.choice(AFFIRMATIONS)}</div>",
+        unsafe_allow_html=True,
+    )
+    streak = calc_streak(entries)
+    st.metric("🔥 Streak", f"{streak} day{'s' if streak != 1 else ''}")
+    st.metric("📓 Total Entries", len(entries))
 
-def analogous_colors(r, g, b, angle_deg=30):
-    h, l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
-    results = []
-    for delta in [-angle_deg / 360.0, angle_deg / 360.0]:
-        new_h = (h + delta) % 1.0
-        nr, ng, nb = colorsys.hls_to_rgb(new_h, l, s)
-        results.append((
-            int(np.clip(nr * 255, 0, 255)),
-            int(np.clip(ng * 255, 0, 255)),
-            int(np.clip(nb * 255, 0, 255)),
-        ))
-    return results
-
-
-def relative_luminance(r, g, b):
-    vals = []
-    for c in [r, g, b]:
-        c = c / 255.0
-        vals.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
-    return 0.2126 * vals[0] + 0.7152 * vals[1] + 0.0722 * vals[2]
-
-
-def label_color(r, g, b):
-    return "#000000" if relative_luminance(r, g, b) > 0.179 else "#FFFFFF"
-
-
-# ─────────────────────────────────────────────────────────────
-# SECTION 2 ▸ IMAGE → DOMINANT COLORS  (NumPy + Pandas)
-# ─────────────────────────────────────────────────────────────
-
-def extract_dominant_colors(image_array, n_colors=6, sensitivity=15):
-    """
-    Hue-bucketing extraction:
-    1. Divide the 360° colour wheel into equal sectors
-    2. Score each pixel by saturation × brightness
-    3. Pick the highest-scoring colour from each sector
-    4. Sort sectors by total score → n_colors palette
-
-    This guarantees that ALL hue families present in the image
-    (reds, greens, blues…) get a representative swatch —
-    a large green background can no longer bury the reds.
-    """
-    if image_array is None:
-        raise ValueError("No image provided.")
-
-    # Ensure RGB
-    if image_array.ndim == 2:
-        image_array = np.stack([image_array] * 3, axis=-1)
-    if image_array.shape[2] == 4:
-        image_array = image_array[:, :, :3]
-
-    # ── 2a. Quantise pixels (NumPy) ──────────────────────────
-    step = max(1, int(sensitivity))
-    quantised = (image_array // step * step).astype(np.uint8)
-    pixels = quantised.reshape(-1, 3)
-
-    # ── 2b. Compute hue, saturation, value per pixel ─────────
-    r_n = pixels[:, 0] / 255.0
-    g_n = pixels[:, 1] / 255.0
-    b_n = pixels[:, 2] / 255.0
-
-    cmax = np.maximum(np.maximum(r_n, g_n), b_n)
-    cmin = np.minimum(np.minimum(r_n, g_n), b_n)
-    delta = cmax - cmin
-
-    # HSV saturation & value
-    sat = np.where(cmax > 0, delta / cmax, 0.0)
-    val = cmax
-
-    # Hue in degrees [0, 360)
-    hue = np.zeros(len(pixels), dtype=np.float32)
-    mask = delta > 1e-6
-    mr = mask & (cmax == r_n)
-    mg = mask & (cmax == g_n)
-    mb = mask & (cmax == b_n)
-    hue[mr] = (60.0 * ((g_n[mr] - b_n[mr]) / delta[mr])) % 360.0
-    hue[mg] = (60.0 * ((b_n[mg] - r_n[mg]) / delta[mg]) + 120.0) % 360.0
-    hue[mb] = (60.0 * ((r_n[mb] - g_n[mb]) / delta[mb]) + 240.0) % 360.0
-
-    # ── 2c. Build Pandas DataFrame ────────────────────────────
-    df = pd.DataFrame(pixels, columns=["R", "G", "B"])
-    df["hue"]    = hue
-    df["sat"]    = sat
-    df["val"]    = val
-    # Weight: sat × val — rewards vivid, bright pixels
-    # Grey / near-black pixels get near-zero weight
-    df["weight"] = np.where(sat > 0.15, sat * val, 0.005)
-
-    # Bucket hue into 12 sectors of 30° each
-    # (grey/unsaturated pixels go to bucket 12 — handled separately)
-    df["hue_bucket"] = np.where(sat > 0.15,
-                                (hue // 30).astype(int),
-                                12)
-
-    # ── 2d. One best colour per hue bucket ───────────────────
-    grouped = (
-        df.groupby(["hue_bucket", "R", "G", "B"])["weight"]
-        .sum()
-        .reset_index()
+# ── Empty-state helper ────────────────────────────────────────────────────────
+def show_empty(icon, title, msg):
+    st.markdown(
+        f"<div class='empty-state'><div class='icon'>{icon}</div>"
+        f"<h3>{title}</h3><p>{msg}</p></div>",
+        unsafe_allow_html=True,
     )
 
-    # Best representative per bucket (highest weight)
-    best_per_bucket = (
-        grouped
-        .sort_values("weight", ascending=False)
-        .groupby("hue_bucket", as_index=False)
-        .first()
-        .sort_values("weight", ascending=False)
-        .head(n_colors)
-        .reset_index(drop=True)
-    )
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Log Today
+# ══════════════════════════════════════════════════════════════════════════════
+if "📝 Log Today" in page:
+    st.markdown("# 📝 How are you today?")
+    st.markdown("A quick 2-minute check-in. Everything here comes from *you*.")
 
-    # ── 2e. Compute display percentages ──────────────────────
-    total = best_per_bucket["weight"].sum()
-    best_per_bucket["Dominance_%"] = (
-        best_per_bucket["weight"] / total * 100
-    ).round(2)
+    if already_logged_today(entries):
+        st.warning("✅ Already logged today! Come back tomorrow, or visit **History** to review.")
+    else:
+        col1, col2 = st.columns([1.2, 1])
 
-    best_per_bucket["Hex"] = [
-        rgb_to_hex(int(row.R), int(row.G), int(row.B))
-        for _, row in best_per_bucket.iterrows()
-    ]
+        with col1:
+            st.markdown("### 😊 Mood")
+            mood_choice = st.select_slider(
+                "Mood", options=list(MOOD_EMOJIS.keys()),
+                value="🙂 Good", label_visibility="collapsed",
+            )
 
-    return best_per_bucket[["Hex", "R", "G", "B", "weight", "Dominance_%"]].rename(
-        columns={"weight": "Count"}
-    )
+            st.markdown("### ⚡ Energy Level")
+            energy = st.slider("Energy", 1, 5, 3, label_visibility="collapsed")
+            st.markdown(f"**{ENERGY_LABELS[energy]}**")
 
+            st.markdown("### 😴 Sleep Last Night")
+            sleep = st.slider(
+                "Sleep", 0.0, 12.0, 7.0, 0.5,
+                format="%.1f hrs", label_visibility="collapsed",
+            )
 
-# ─────────────────────────────────────────────────────────────
-# SECTION 3 ▸ BUILD THE MATPLOTLIB FIGURE
-# ─────────────────────────────────────────────────────────────
+            st.markdown("### 😰 Stress Level")
+            stress = st.slider(
+                "Stress  (1 = calm · 5 = very stressed)", 1, 5, 2,
+                label_visibility="collapsed",
+            )
 
-def build_figure(df_colors):
-    n = len(df_colors)
-    fig = plt.figure(figsize=(14, 9), facecolor="#0F0F0F")
-    fig.subplots_adjust(left=0.03, right=0.97, top=0.88, bottom=0.04)
-    gs = GridSpec(4, 1, figure=fig,
-                  height_ratios=[1.4, 1.6, 1.6, 1.6], hspace=0.6)
+        with col2:
+            st.markdown("### ✅ Healthy Habits Today")
+            selected_habits = [h for h in HABITS if st.checkbox(h)]
 
-    fig.text(0.5, 0.95, "COLOR PALETTE ARCHEOLOGIST",
-             ha="center", va="top", color="#F5F0E8", fontsize=15,
-             fontfamily="monospace", fontweight="bold")
-    fig.text(0.5, 0.905, "Extracted · Analyzed · Theorized",
-             ha="center", va="top", color="#888880", fontsize=8,
-             fontfamily="monospace")
+            st.markdown("### 📝 Journal Note *(optional)*")
+            note = st.text_area(
+                "Note", placeholder="What's on your mind today?",
+                height=110, label_visibility="collapsed",
+            )
 
-    def clean_ax(ax):
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
+        st.markdown("")
+        col_btn, _ = st.columns([1, 3])
+        with col_btn:
+            if st.button("🌸 Save Entry", use_container_width=True):
+                save_entry({
+                    "date":        date.today().isoformat(),
+                    "mood":        MOOD_EMOJIS[mood_choice],
+                    "mood_label":  mood_choice,
+                    "energy":      energy,
+                    "sleep":       sleep,
+                    "stress":      stress,
+                    "habits":      selected_habits,
+                    "habit_count": len(selected_habits),
+                    "note":        note,
+                })
+                st.success(f"✨ Saved! {random.choice(AFFIRMATIONS)}")
+                st.balloons()
+                st.rerun()
 
-    # Panel 0 – Proportion Bar
-    ax0 = fig.add_subplot(gs[0])
-    clean_ax(ax0)
-    ax0.text(-0.01, 1.35, "01 / PROPORTION", transform=ax0.transAxes,
-             color="#888880", fontsize=7.5,
-             fontfamily="monospace", fontweight="bold")
-    x_cursor = 0.0
-    for _, row in df_colors.iterrows():
-        frac = row["Dominance_%"] / 100.0
-        rect = mpatches.FancyBboxPatch(
-            (x_cursor, 0.14), frac, 0.72,
-            boxstyle="square,pad=0",
-            facecolor=row["Hex"], edgecolor="none"
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: My Trends
+# ══════════════════════════════════════════════════════════════════════════════
+elif "📊 My Trends" in page:
+    st.markdown("# 📊 Your Wellness Trends")
+
+    if len(entries) < 2:
+        show_empty("🌱", "Not enough data yet",
+                   "Log at least 2 days to see charts.")
+    else:
+        df = entries_to_df(entries)
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("😊 Avg Mood",   f"{df['mood'].mean():.1f} / 5")
+        m2.metric("⚡ Avg Energy", f"{df['energy'].mean():.1f} / 5")
+        m3.metric("😴 Avg Sleep",  f"{df['sleep'].mean():.1f} hrs")
+        m4.metric("✅ Avg Habits", f"{df['habit_count'].mean():.1f} / day")
+
+        # Mood over time
+        fig_mood = px.area(df, x="date", y="mood", title="Mood Over Time",
+                           color_discrete_sequence=["#b06ab3"], template="plotly_white")
+        fig_mood.update_traces(fill="tozeroy", fillcolor="rgba(176,106,179,0.15)", line_width=2.5)
+        fig_mood.update_layout(
+            font_family="DM Sans", title_font_family="Fraunces",
+            yaxis=dict(range=[0, 5.5], tickvals=[1,2,3,4,5],
+                       ticktext=["😞 1","😕 2","😐 3","🙂 4","😄 5"]),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            margin=dict(t=40, b=20),
         )
-        ax0.add_patch(rect)
-        if frac > 0.055:
-            lc = label_color(int(row["R"]), int(row["G"]), int(row["B"]))
-            ax0.text(x_cursor + frac / 2, 0.50,
-                     f"{row['Dominance_%']:.1f}%",
-                     ha="center", va="center", color=lc,
-                     fontsize=7.5, fontfamily="monospace", fontweight="bold")
-        x_cursor += frac
+        st.plotly_chart(fig_mood, use_container_width=True)
 
-    # Panel 1 – Dominant Swatches
-    ax1 = fig.add_subplot(gs[1])
-    clean_ax(ax1)
-    ax1.text(-0.01, 1.18, "02 / DOMINANT PALETTE",
-             transform=ax1.transAxes, color="#888880",
-             fontsize=7.5, fontfamily="monospace", fontweight="bold")
-    _draw_swatch_row(ax1, df_colors)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            fig_sc = px.scatter(df, x="sleep", y="mood", title="Sleep vs Mood",
+                                color="energy", color_continuous_scale=["#4568dc","#b06ab3"],
+                                size="habit_count", size_max=18,
+                                hover_data=["date","mood_label"], template="plotly_white")
+            fig_sc.update_layout(
+                font_family="DM Sans", title_font_family="Fraunces",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(range=[0,5.5]), margin=dict(t=40,b=20),
+            )
+            st.plotly_chart(fig_sc, use_container_width=True)
 
-    # Panel 2 – Complementary
-    ax2 = fig.add_subplot(gs[2])
-    clean_ax(ax2)
-    ax2.text(-0.01, 1.18, "03 / COMPLEMENTARY THEORY",
-             transform=ax2.transAxes, color="#888880",
-             fontsize=7.5, fontfamily="monospace", fontweight="bold")
-    comp_rows = []
-    for _, row in df_colors.iterrows():
-        cr, cg, cb = complementary_color(int(row["R"]), int(row["G"]), int(row["B"]))
-        comp_rows.append({
-            "Hex": rgb_to_hex(cr, cg, cb),
-            "R": cr, "G": cg, "B": cb,
-            "Dominance_%": row["Dominance_%"]
-        })
-    _draw_swatch_row(ax2, pd.DataFrame(comp_rows))
+        with col_b:
+            fig_es = go.Figure()
+            fig_es.add_trace(go.Scatter(x=df["date"], y=df["energy"], name="Energy",
+                                        mode="lines+markers",
+                                        line=dict(color="#4568dc", width=2), marker=dict(size=6)))
+            fig_es.add_trace(go.Scatter(x=df["date"], y=df["stress"], name="Stress",
+                                        mode="lines+markers",
+                                        line=dict(color="#f87171", width=2, dash="dot"),
+                                        marker=dict(size=6)))
+            fig_es.update_layout(
+                title="Energy vs Stress", font_family="DM Sans", title_font_family="Fraunces",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(range=[0,5.5]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                margin=dict(t=40, b=20),
+            )
+            st.plotly_chart(fig_es, use_container_width=True)
 
-    # Panel 3 – Analogous
-    ax3 = fig.add_subplot(gs[3])
-    clean_ax(ax3)
-    ax3.text(-0.01, 1.18, "04 / ANALOGOUS THEORY",
-             transform=ax3.transAxes, color="#888880",
-             fontsize=7.5, fontfamily="monospace", fontweight="bold")
-    analog_rows = []
-    for _, row in df_colors.iterrows():
-        for ar, ag, ab in analogous_colors(int(row["R"]), int(row["G"]), int(row["B"])):
-            analog_rows.append({
-                "Hex": rgb_to_hex(ar, ag, ab),
-                "R": ar, "G": ag, "B": ab,
-                "Dominance_%": row["Dominance_%"] / 2
-            })
-    _draw_swatch_row(ax3, pd.DataFrame(analog_rows).head(n))
+        # Habit bar
+        all_habits = [h for e in entries for h in e.get("habits", [])]
+        if all_habits:
+            hc = pd.Series(all_habits).value_counts().reset_index()
+            hc.columns = ["Habit", "Count"]
+            fig_h = px.bar(hc, x="Count", y="Habit", orientation="h",
+                           title="Most Practiced Habits",
+                           color="Count", color_continuous_scale=["#b06ab3","#4568dc"],
+                           template="plotly_white")
+            fig_h.update_layout(
+                font_family="DM Sans", title_font_family="Fraunces",
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                coloraxis_showscale=False, yaxis=dict(autorange="reversed"),
+                margin=dict(t=40,b=20),
+            )
+            st.plotly_chart(fig_h, use_container_width=True)
+        else:
+            st.info("Start checking habits in your daily log to see them here!")
 
-    return fig
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: Insights
+# ══════════════════════════════════════════════════════════════════════════════
+elif "🔍 Insights" in page:
+    st.markdown("# 🔍 Personal Insights")
+    st.markdown("Auto-generated from *your* logged entries — no external data used.")
 
+    if len(entries) < 3:
+        show_empty("🔭", "Need a bit more data",
+                   "Log at least 3 days to unlock personalised insights.")
+    else:
+        df = entries_to_df(entries)
+        insights = []
 
-def _draw_swatch_row(ax, df):
-    n = len(df)
-    if n == 0:
-        return
-    swatch_w = 0.96 / n * 0.88
-    gap      = 0.96 / n * 0.12
-    for i, (_, row) in enumerate(df.iterrows()):
-        x = i * (swatch_w + gap) + gap / 2
-        rect = mpatches.FancyBboxPatch(
-            (x, 0.22), swatch_w, 0.62,
-            boxstyle="round,pad=0.005",
-            facecolor=row["Hex"],
-            edgecolor="#2A2A2A", linewidth=0.6
+        # Sleep
+        good_sleep = df[df["sleep"] >= 7]["mood"].mean()
+        bad_sleep  = df[df["sleep"] <  7]["mood"].mean()
+        if pd.notna(good_sleep) and pd.notna(bad_sleep):
+            diff = good_sleep - bad_sleep
+            if diff > 0.3:
+                insights.append(f"🛌 **Sleep matters for you!** Mood is **{diff:.1f} pts higher** on 7+ hour nights.")
+            else:
+                insights.append("🛌 Your mood is fairly consistent regardless of how much you sleep — interesting!")
+
+        # Stress
+        hi_s = df[df["stress"] >= 4]["mood"].mean()
+        lo_s = df[df["stress"] <= 2]["mood"].mean()
+        if pd.notna(hi_s) and pd.notna(lo_s):
+            insights.append(f"😰 High-stress days average **{hi_s:.1f}/5** mood vs **{lo_s:.1f}/5** on calm days.")
+
+        # Habits
+        active   = df[df["habit_count"] >= 3]["mood"].mean()
+        inactive = df[df["habit_count"] <  3]["mood"].mean()
+        if pd.notna(active) and pd.notna(inactive) and active > inactive:
+            insights.append(f"✅ Days with 3+ habits completed average **{active:.1f}/5** mood vs **{inactive:.1f}/5** otherwise.")
+
+        # Best day
+        best = df.loc[df["mood"].idxmax()]
+        insights.append(
+            f"🏆 Your **best mood day** was **{best['date'].strftime('%B %d')}** "
+            f"— {best['mood_label']} with {best['sleep']}h sleep."
         )
-        ax.add_patch(rect)
-        ax.text(x + swatch_w / 2, 0.10, row["Hex"],
-                ha="center", va="top", color="#AAAAAA",
-                fontsize=6.2, fontfamily="monospace")
 
+        # Trend
+        if len(df) >= 5:
+            recent  = df.tail(3)["mood"].mean()
+            earlier = df.iloc[:-3]["mood"].mean()
+            if recent > earlier + 0.2:
+                insights.append("📈 **Great news!** Your mood has been trending **upward** recently! 🌟")
+            elif recent < earlier - 0.2:
+                insights.append("📉 Your mood has dipped lately. Try adding one small habit tomorrow 💪")
+            else:
+                insights.append("➡️ Your mood has been **steady** recently. Consistency is underrated!")
 
-# ─────────────────────────────────────────────────────────────
-# SECTION 4 ▸ GRADIO HANDLER
-# ─────────────────────────────────────────────────────────────
+        for ins in insights:
+            st.markdown(f"<div class='insight-box'>{ins}</div>", unsafe_allow_html=True)
 
-def analyze_image(image, n_colors, sensitivity):
-    if image is None:
-        raise gr.Error("Please upload an image first.")
+        # Donut
+        mood_dist = df["mood_label"].value_counts().reset_index()
+        mood_dist.columns = ["Mood", "Count"]
+        fig_d = px.pie(mood_dist, values="Count", names="Mood",
+                       title="Your Mood Distribution", hole=0.55,
+                       color_discrete_sequence=["#b06ab3","#4568dc","#7dd3fc","#f9a8d4","#86efac"])
+        fig_d.update_layout(font_family="DM Sans", title_font_family="Fraunces",
+                            paper_bgcolor="rgba(0,0,0,0)", margin=dict(t=40))
+        st.plotly_chart(fig_d, use_container_width=True)
 
-    df_colors = extract_dominant_colors(
-        image_array=image,
-        n_colors=int(n_colors),
-        sensitivity=int(sensitivity)
-    )
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE: History
+# ══════════════════════════════════════════════════════════════════════════════
+elif "📅 History" in page:
+    st.markdown("# 📅 Entry History")
 
-    fig = build_figure(df_colors)
+    if not entries:
+        show_empty("📓", "No entries yet",
+                   "Head to 'Log Today' and make your first entry!")
+    else:
+        df = entries_to_df(entries)
+        df_show = df[["date","mood_label","energy","sleep","stress","habit_count","note"]].copy()
+        df_show["date"] = df_show["date"].dt.strftime("%b %d, %Y")
+        df_show.columns = ["Date","Mood","Energy","Sleep (h)","Stress","Habits ✅","Note"]
+        df_show = df_show.iloc[::-1].reset_index(drop=True)
 
-    df_display = df_colors[["Hex", "R", "G", "B", "Dominance_%"]].copy()
-    df_display.columns = ["Hex Code", "R", "G", "B", "Dominance %"]
+        st.dataframe(
+            df_show,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Mood":      st.column_config.TextColumn(width="medium"),
+                "Note":      st.column_config.TextColumn(width="large"),
+                "Energy":    st.column_config.ProgressColumn(min_value=0, max_value=5, format="%d ⚡"),
+                "Sleep (h)": st.column_config.NumberColumn(format="%.1f h"),
+                "Stress":    st.column_config.ProgressColumn(min_value=0, max_value=5, format="%d"),
+            },
+        )
 
-    return fig, df_display
-
-
-# ─────────────────────────────────────────────────────────────
-# SECTION 5 ▸ GRADIO INTERFACE
-# ─────────────────────────────────────────────────────────────
-
-with gr.Blocks(title="Color Palette Archeologist") as demo:
-
-    gr.Markdown("""
-# ◈ Color Palette Archeologist
-*Upload any image — unearth its hidden color DNA.*
-    """)
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            img_input = gr.Image(
-                label="Upload Image",
-                type="numpy",
-                image_mode="RGB"
-            )
-            n_colors_slider = gr.Slider(
-                minimum=3, maximum=12, value=6, step=1,
-                label="Number of Colors to Extract",
-                info="How many dominant hue families to surface"
-            )
-            sensitivity_slider = gr.Slider(
-                minimum=5, maximum=50, value=15, step=5,
-                label="Color Sensitivity (Quantization Step)",
-                info="Lower = more precise colour buckets"
-            )
-            analyze_btn = gr.Button("ANALYZE IMAGE", variant="primary")
-
-        with gr.Column(scale=2):
-            plot_output = gr.Plot(label="Color Analysis")
-            df_output = gr.Dataframe(
-                label="Dominant Colors",
-                headers=["Hex Code", "R", "G", "B", "Dominance %"],
-                interactive=False
-            )
-
-    analyze_btn.click(
-        fn=analyze_image,
-        inputs=[img_input, n_colors_slider, sensitivity_slider],
-        outputs=[plot_output, df_output]
-    )
-
-    img_input.change(
-        fn=analyze_image,
-        inputs=[img_input, n_colors_slider, sensitivity_slider],
-        outputs=[plot_output, df_output]
-    )
-
-    gr.Markdown("""
----
-**Panels:** `01 PROPORTION` · `02 DOMINANT` · `03 COMPLEMENTARY` · `04 ANALOGOUS`
-    """)
-
-
-# ─────────────────────────────────────────────────────────────
-# SECTION 6 ▸ ENTRY POINT
-# ─────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    demo.launch(
-        server_name="localhost",
-        server_port=7860,
-        inbrowser=True,
-        show_error=True
-    )
+        st.markdown("---")
+        st.markdown("#### ⚠️ Danger Zone")
+        if st.button("🗑️ Clear All My Data"):
+            if st.session_state.get("confirm_clear"):
+                clear_all_data()
+                st.session_state["confirm_clear"] = False
+                st.success("All entries deleted.")
+                st.rerun()
+            else:
+                st.session_state["confirm_clear"] = True
+                st.warning("Click again to permanently delete all entries.")
